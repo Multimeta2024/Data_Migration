@@ -1,0 +1,31 @@
+# Output & Data directories
+outputs/
+payloads/
+scratch/
+tmp/
+report-extractor/output/
+
+# Ignore Python cache files
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+myenv/
+
+# Environment & Secrets
+.env
+.env.*
+
+# OS Files
+.DS_Store
+Thumbs.db
