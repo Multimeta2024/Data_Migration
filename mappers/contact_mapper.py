@@ -215,6 +215,35 @@ def run_contact_mapping(ledgers, gmap, parent_accounts, migration_date, out_dir)
         writer.writerows(opening_balances_to_import)
     logger.info(f"Opening Balances CSV generated at {ob_path}")
 
+    # Ensure Unspecified Vendor & Unspecified Customer exist
+    vendor_names = {v["name"].strip().lower() for v in vendor_list}
+    if "unspecified vendor" not in vendor_names:
+        vendor_list.append({
+            "name": "Unspecified Vendor",
+            "opening_balance": "",
+            "debit_or_credit": "",
+            "gstin": "",
+            "pan": "",
+            "pincode": "",
+            "address": "",
+            "credit_period": "",
+            "tally_state": "",
+        })
+
+    customer_names = {c["name"].strip().lower() for c in customer_list}
+    if "unspecified customer" not in customer_names:
+        customer_list.append({
+            "name": "Unspecified Customer",
+            "opening_balance": "",
+            "debit_or_credit": "",
+            "gstin": "",
+            "pan": "",
+            "pincode": "",
+            "address": "",
+            "credit_period": "",
+            "tally_state": "",
+        })
+
     # Write Customers CSV
     cust_path = os.path.join(out_dir, "zoho_customers_import.csv")
     _write_contacts_csv(cust_path, customer_list, CUST_HEADERS, is_vendor=False)

@@ -209,12 +209,16 @@ def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
 
             expense_lines = []
             for le in ledger_entries:
-                lname = (le.find("LEDGERNAME").text or "").strip() if le.find("LEDGERNAME") is not None else ""
+                lname_node = le.find("LEDGERNAME")
+                lname = (lname_node.text or "").strip() if (lname_node is not None and lname_node.text) else ""
+                if not lname:
+                    continue
+
                 lamt_str = le.find("AMOUNT").text if le.find("AMOUNT") is not None else "0"
                 lamt = abs(clean_float(lamt_str))
 
                 is_party = le.find("ISPARTYLEDGER").text if le.find("ISPARTYLEDGER") is not None else "No"
-                if is_party == "Yes" or lname == party_name:
+                if is_party == "Yes" or lname.lower() == party_name.lower():
                     continue
 
                 if is_tax_ledger(lname):
@@ -223,9 +227,15 @@ def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
                 expense_lines.append((lname, lamt))
 
             if not expense_lines:
-                expense_lines.append(("Purchase Accounts", abs(clean_float(party_ledgers[0].find("AMOUNT").text)) if party_ledgers else 0.0))
+                fallback_amt = 0.0
+                if party_ledgers:
+                    amt_node = party_ledgers[0].find("AMOUNT")
+                    if amt_node is not None and amt_node.text:
+                        fallback_amt = abs(clean_float(amt_node.text))
+                expense_lines.append(("Purchase", fallback_amt))
 
             for lname, lamt in expense_lines:
+                account_name = lname if lname else "Purchase"
                 zoho_rows.append({
                     "Bill Number": vch_no,
                     "Bill Date": date_str,
@@ -239,10 +249,10 @@ def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
                     "Due Date": due_date,
                     "Currency Code": CURRENCY,
                     "Exchange Rate": "1",
-                    "Account": lname,
+                    "Account": account_name,
                     "Item Name": "",
                     "SKU": "",
-                    "Item Desc": notes or lname,
+                    "Item Desc": notes or account_name,
                     "Item Type": "service",
                     "HSN/SAC": "",
                     "Quantity": "1",
