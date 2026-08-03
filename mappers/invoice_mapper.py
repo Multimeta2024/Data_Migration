@@ -47,11 +47,23 @@ def format_invoice_number(vch_no: str, max_len: int = 16) -> str:
         return shortened
     return shortened[:max_len]
 
+def snap_to_standard_gst(tax_percent: float) -> int:
+    """Snaps calculated tax percentage to standard Indian GST slabs (0, 5, 12, 18, 28)."""
+    val = round(tax_percent, 2)
+    if val <= 2.5:
+        return 0
+    elif val <= 8.5:
+        return 5
+    elif val <= 15.0:
+        return 12
+    elif val <= 23.0:
+        return 18
+    else:
+        return 28
+
 def get_zoho_tax_info(tax_percent, is_interstate):
     """Returns (item_tax_name, item_tax_type) formatted exactly as configured in Zoho Books organization."""
-    tax_val = int(round(tax_percent))
-    if tax_val == 0:
-        return "", ""
+    tax_val = snap_to_standard_gst(tax_percent if tax_percent is not None else 0.0)
     if is_interstate:
         return f"IGST{tax_val}", "IGST"
     else:
@@ -326,6 +338,7 @@ def run_invoice_mapping(tally_client, out_dir, f_date: str, t_date: str):
                     if item_tax_percent == 0 and voucher_tax_rate > 0:
                         item_tax_percent = voucher_tax_rate
                     item_tax, item_tax_type = get_zoho_tax_info(item_tax_percent, is_interstate)
+                    snapped_tax_rate = snap_to_standard_gst(item_tax_percent)
 
                     zoho_rows.append({
                         "Invoice Number": vch_no, "Estimate Number": "",
@@ -341,7 +354,7 @@ def run_invoice_mapping(tally_client, out_dir, f_date: str, t_date: str):
                         "Item Price": format_number(item_price),
                         "Item Tax Exemption Reason": "", "Is Inclusive Tax": "FALSE",
                         "Item Tax": item_tax, "Item Tax Type": item_tax_type,
-                        "Item Tax %": format_number(item_tax_percent),
+                        "Item Tax %": str(snapped_tax_rate),
                         "Is Discount Before Tax": "TRUE",
                         "Branch Name": "Head Office", "Warehouse Name": "Head Office", "Notes": notes
                     })
@@ -393,6 +406,7 @@ def run_invoice_mapping(tally_client, out_dir, f_date: str, t_date: str):
                     if lamt == 0:
                         continue
                     item_tax, item_tax_type = get_zoho_tax_info(voucher_tax_rate, is_interstate)
+                    snapped_tax_rate = snap_to_standard_gst(voucher_tax_rate)
                     zoho_rows.append({
                         "Invoice Number": vch_no, "Estimate Number": "",
                         "Invoice Date": date_str, "Invoice Status": "Sent",
@@ -407,7 +421,7 @@ def run_invoice_mapping(tally_client, out_dir, f_date: str, t_date: str):
                         "Item Price": format_number(lamt),
                         "Item Tax Exemption Reason": "", "Is Inclusive Tax": "FALSE",
                         "Item Tax": item_tax, "Item Tax Type": item_tax_type,
-                        "Item Tax %": format_number(voucher_tax_rate),
+                        "Item Tax %": str(snapped_tax_rate),
                         "Is Discount Before Tax": "TRUE",
                         "Branch Name": "Head Office", "Warehouse Name": "Head Office", "Notes": notes
                     })

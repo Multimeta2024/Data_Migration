@@ -356,9 +356,9 @@ def run_item_mapping(tally_client, out_dir: str) -> list:
             sales_account = "Sales"
             purchase_account = "Cost of Goods Sold"
             inventory_account = "Inventory Asset"
-            init_stock = _fmt_qty(ob_qty) if ob_qty > 0 else ""
-            init_rate = _fmt_rate(ob_rate) if ob_qty > 0 else ""
-            warehouse_name = "Head Office" if ob_qty > 0 else ""
+            init_stock = _fmt_qty(ob_qty) if ob_qty > 0 else "0"
+            init_rate = _fmt_rate(ob_rate) if ob_qty > 0 else "0"
+            warehouse_name = "Head Office"
 
         row = {
             "Item Name":          name,

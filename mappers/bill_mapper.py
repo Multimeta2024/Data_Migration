@@ -8,9 +8,9 @@ from lxml import etree
 from config.constants import CURRENCY, GST_STATE_MAP, BILL_HEADERS
 from utils.gst_helpers import get_state_code, infer_gst_treatment
 from utils.date_helpers import format_date, calculate_due_date, get_fy_batches
-from utils.math_helpers import clean_float, parse_due_days
+from utils.math_helpers import clean_float, parse_qty_unit, parse_rate, parse_due_days
 from core.xml_parser import sanitize_xml
-from mappers.invoice_mapper import format_invoice_number, is_tax_ledger, get_zoho_tax_info, _write_split_csv
+from mappers.invoice_mapper import format_invoice_number, is_tax_ledger, get_zoho_tax_info, snap_to_standard_gst, format_number, _write_split_csv
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,7 @@ def query_purchase_vouchers(tally_client, f_date: str, t_date: str):
                             <TYPE>Voucher</TYPE>
                             <FILTER>IsPurchaseFilter</FILTER>
                             <FETCH>DATE, VOUCHERNUMBER, PARTYLEDGERNAME, NARRATION, PARTYGSTIN, PLACEOFSUPPLY, GSTREGISTRATIONTYPE, BASICDUEDATEOFPYMT</FETCH>
+                            <FETCH>ALLINVENTORYENTRIES.*</FETCH>
                             <FETCH>ALLLEDGERENTRIES.*</FETCH>
                             <FETCH>LEDGERENTRIES.*</FETCH>
                         </COLLECTION>
@@ -49,12 +50,28 @@ def query_purchase_vouchers(tally_client, f_date: str, t_date: str):
     </ENVELOPE>"""
     return tally_client.send_request(payload)
 
+def load_item_metadata(out_dir: str) -> dict:
+    """Load Item Name -> (Product Type, Item Type) mapping from zoho_items_import.csv."""
+    items_csv = os.path.join(out_dir, "zoho_items_import.csv")
+    mapping = {}
+    if os.path.exists(items_csv):
+        with open(items_csv, "r", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            for r in reader:
+                name = r.get("Item Name", "").strip().lower()
+                ptype = r.get("Product Type", "").strip().lower()
+                itype = r.get("Item Type", "").strip().lower()
+                if name:
+                    mapping[name] = (ptype, itype)
+    return mapping
+
 def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
     """
     Fetches ALL purchase vouchers from Tally ONE FINANCIAL YEAR AT A TIME
     to avoid Tally timeouts, maps them to Zoho Bills, and writes CSV(s).
     """
     base_csv = os.path.join(out_dir, "zoho_bills_import.csv")
+    item_meta = load_item_metadata(out_dir)
     batches = get_fy_batches(f_date, t_date)
     logger.info(f"Fetching bills in {len(batches)} FY batch(es): {f_date} → {t_date}")
     zoho_rows = []
@@ -174,7 +191,7 @@ def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
             payment_terms_label = f"Net {due_days}" if due_days > 0 else "Due on Receipt"
             due_date = calculate_due_date(date_str, due_days)
             
-            # Voucher-level tax calculation
+            # Voucher-level tax rate calculation (fallback)
             total_tax_amt = 0.0
             total_expense_amt = 0.0
             
@@ -184,7 +201,7 @@ def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
                 lamt = abs(clean_float(lamt_str))
                 
                 is_party = le.find("ISPARTYLEDGER").text if le.find("ISPARTYLEDGER") is not None else "No"
-                if is_party == "Yes" or lname == party_name:
+                if is_party == "Yes" or lname.lower() == party_name.lower():
                     continue
                     
                 if is_tax_ledger(lname):
@@ -192,86 +209,229 @@ def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
                 else:
                     total_expense_amt += lamt
                     
-            tax_rate = 0.0
+            voucher_tax_rate = 0.0
             if total_expense_amt > 0 and total_tax_amt > 0:
-                tax_rate = round((total_tax_amt / total_expense_amt) * 100)
+                voucher_tax_rate = (total_tax_amt / total_expense_amt) * 100.0
+
+            inv_entries = [ie for ie in v.findall(".//ALLINVENTORYENTRIES.LIST")
+                           if ie.find("STOCKITEMNAME") is not None and (ie.find("STOCKITEMNAME").text or "").strip()]
 
             is_interstate = (pos_code != "TN")
-            tax_name, tax_type = get_zoho_tax_info(tax_rate, is_interstate)
-            if tax_rate > 0 and tax_name:
-                tax_exemption_reason = ""
-                tax_pct_str = str(int(tax_rate))
+            tax_exemption_reason = "Out of Scope" if gst_treatment in ("out_of_scope", "non_gst") else ""
+
+            # CASE 1: Item Purchase Bill (contains stock items)
+            if len(inv_entries) > 0:
+                for ie in inv_entries:
+                    item_name_node = ie.find("STOCKITEMNAME")
+                    item_name = (item_name_node.text or "").strip() if item_name_node is not None else ""
+                    hsn_node = ie.find("GSTHSNNAME")
+                    hsn = (hsn_node.text or "").strip() if hsn_node is not None else ""
+                    desc_node = ie.find("DESCRIPTION")
+                    desc = (desc_node.text or "").strip() if desc_node is not None else ""
+                    qty_node = ie.find("BILLEDQTY")
+                    qty_str = qty_node.text if qty_node is not None else "1"
+                    qty_val, unit_val = parse_qty_unit(qty_str)
+                    amt_node = ie.find("AMOUNT")
+                    amt_val = abs(clean_float(amt_node.text if amt_node is not None else "0"))
+                    rate_node = ie.find("RATE")
+                    rate_str = rate_node.text if rate_node is not None else ""
+                    item_price = (amt_val / qty_val) if qty_val != 0 else parse_rate(rate_str)
+                    purchase_acc_node = ie.find(".//ACCOUNTINGALLOCATIONS.LIST/LEDGERNAME")
+                    purchase_acc = (purchase_acc_node.text or "").strip() if (purchase_acc_node is not None and purchase_acc_node.text) else "Cost of Goods Sold"
+
+                    item_info = item_meta.get(item_name.strip().lower())
+                    if item_info:
+                        ptype_v, itype_v = item_info
+                        if ptype_v == "goods" and itype_v == "inventory":
+                            bill_account = "Inventory Asset"
+                            bill_item_type = "goods"
+                        else:
+                            bill_account = purchase_acc
+                            bill_item_type = "service"
+                    else:
+                        bill_account = "Inventory Asset"
+                        bill_item_type = "goods"
+
+                    cgst_rate = sgst_rate = igst_rate = 0.0
+                    for rd in ie.findall(".//RATEDETAILS.LIST"):
+                        head = rd.find("GSTRATEDUTYHEAD")
+                        rate_n = rd.find("GSTRATE")
+                        if head is not None and rate_n is not None:
+                            h_text = (head.text or "").strip().upper()
+                            r_text = (rate_n.text or "").strip()
+                            if r_text:
+                                try:
+                                    val = float(r_text)
+                                    if h_text == "CGST": cgst_rate = val
+                                    elif h_text in ("SGST", "SGST/UTGST", "UTGST"): sgst_rate = val
+                                    elif h_text == "IGST": igst_rate = val
+                                except ValueError:
+                                    pass
+
+                    item_tax_percent = igst_rate if igst_rate > 0 else (cgst_rate + sgst_rate)
+                    if item_tax_percent == 0 and voucher_tax_rate > 0:
+                        item_tax_percent = voucher_tax_rate
+                    tax_name, tax_type = get_zoho_tax_info(item_tax_percent, is_interstate)
+                    tax_pct_str = str(snap_to_standard_gst(item_tax_percent))
+
+                    zoho_rows.append({
+                        "Bill Number": vch_no,
+                        "Bill Date": date_str,
+                        "Vendor Name": party_name,
+                        "GST Treatment": gst_treatment,
+                        "GST Identification Number (GSTIN)": gstin,
+                        "Place of Supply": pos_code,
+                        "PurchaseOrder": "",
+                        "Payment Terms": payment_terms_num,
+                        "Payment Terms Label": payment_terms_label,
+                        "Due Date": due_date,
+                        "Currency Code": CURRENCY,
+                        "Exchange Rate": "1",
+                        "Account": bill_account,
+                        "Item Name": item_name,
+                        "SKU": "",
+                        "Item Desc": desc or notes or item_name,
+                        "Item Type": bill_item_type,
+                        "HSN/SAC": hsn,
+                        "Quantity": format_number(qty_val),
+                        "Usage unit": unit_val,
+                        "Rate": f"{item_price:.2f}",
+                        "Item Price": f"{item_price:.2f}",
+                        "Is Inclusive Tax": "false",
+                        "Tax Name": tax_name,
+                        "Tax Percentage": tax_pct_str,
+                        "Tax Type": tax_type,
+                        "Tax Exemption Reason": tax_exemption_reason,
+                        "Item Tax": tax_name,
+                        "Item Tax Type": tax_type,
+                        "Item Tax %": tax_pct_str,
+                        "Item Tax Exemption Reason": tax_exemption_reason,
+                        "Branch Name": "Head Office"
+                    })
+
+                # Additional expense ledger entries in inventory voucher
+                for le in ledger_entries:
+                    lname_node = le.find("LEDGERNAME")
+                    lname = (lname_node.text or "").strip() if (lname_node is not None and lname_node.text) else ""
+                    if not lname:
+                        continue
+                    is_party = le.find("ISPARTYLEDGER").text if le.find("ISPARTYLEDGER") is not None else "No"
+                    if is_party == "Yes" or lname.lower() == party_name.lower() or is_tax_ledger(lname):
+                        continue
+                    lamt_str = le.find("AMOUNT").text if le.find("AMOUNT") is not None else "0"
+                    lamt = abs(clean_float(lamt_str))
+                    if lamt == 0:
+                        continue
+                    tax_name, tax_type = get_zoho_tax_info(0.0, is_interstate)
+                    zoho_rows.append({
+                        "Bill Number": vch_no,
+                        "Bill Date": date_str,
+                        "Vendor Name": party_name,
+                        "GST Treatment": gst_treatment,
+                        "GST Identification Number (GSTIN)": gstin,
+                        "Place of Supply": pos_code,
+                        "PurchaseOrder": "",
+                        "Payment Terms": payment_terms_num,
+                        "Payment Terms Label": payment_terms_label,
+                        "Due Date": due_date,
+                        "Currency Code": CURRENCY,
+                        "Exchange Rate": "1",
+                        "Account": lname,
+                        "Item Name": "",
+                        "SKU": "",
+                        "Item Desc": f"Additional charge: {lname}",
+                        "Item Type": "service",
+                        "HSN/SAC": "999900",
+                        "Quantity": "1",
+                        "Usage unit": "pcs",
+                        "Rate": f"{lamt:.2f}",
+                        "Item Price": f"{lamt:.2f}",
+                        "Is Inclusive Tax": "false",
+                        "Tax Name": tax_name,
+                        "Tax Percentage": "0",
+                        "Tax Type": tax_type,
+                        "Tax Exemption Reason": tax_exemption_reason,
+                        "Item Tax": tax_name,
+                        "Item Tax Type": tax_type,
+                        "Item Tax %": "0",
+                        "Item Tax Exemption Reason": tax_exemption_reason,
+                        "Branch Name": "Head Office"
+                    })
+
+            # CASE 2: Accounting / Service Purchase Bill
             else:
-                tax_name = ""
-                tax_type = ""
-                tax_exemption_reason = "Out of Scope"
-                tax_pct_str = "0"
+                expense_lines = []
+                for le in ledger_entries:
+                    lname_node = le.find("LEDGERNAME")
+                    lname = (lname_node.text or "").strip() if (lname_node is not None and lname_node.text) else ""
+                    if not lname:
+                        continue
 
-            expense_lines = []
-            for le in ledger_entries:
-                lname_node = le.find("LEDGERNAME")
-                lname = (lname_node.text or "").strip() if (lname_node is not None and lname_node.text) else ""
-                if not lname:
-                    continue
+                    lamt_str = le.find("AMOUNT").text if le.find("AMOUNT") is not None else "0"
+                    lamt = abs(clean_float(lamt_str))
+                    if lamt == 0:
+                        continue
 
-                lamt_str = le.find("AMOUNT").text if le.find("AMOUNT") is not None else "0"
-                lamt = abs(clean_float(lamt_str))
+                    is_party = le.find("ISPARTYLEDGER").text if le.find("ISPARTYLEDGER") is not None else "No"
+                    if is_party == "Yes" or lname.lower() == party_name.lower():
+                        continue
 
-                is_party = le.find("ISPARTYLEDGER").text if le.find("ISPARTYLEDGER") is not None else "No"
-                if is_party == "Yes" or lname.lower() == party_name.lower():
-                    continue
+                    if is_tax_ledger(lname):
+                        continue
 
-                if is_tax_ledger(lname):
-                    continue
+                    expense_lines.append((lname, lamt))
 
-                expense_lines.append((lname, lamt))
+                if not expense_lines:
+                    fallback_amt = 0.0
+                    if party_ledgers:
+                        amt_node = party_ledgers[0].find("AMOUNT")
+                        if amt_node is not None and amt_node.text:
+                            fallback_amt = abs(clean_float(amt_node.text))
+                    expense_lines.append(("Purchase", fallback_amt))
 
-            if not expense_lines:
-                fallback_amt = 0.0
-                if party_ledgers:
-                    amt_node = party_ledgers[0].find("AMOUNT")
-                    if amt_node is not None and amt_node.text:
-                        fallback_amt = abs(clean_float(amt_node.text))
-                expense_lines.append(("Purchase", fallback_amt))
+                tax_name, tax_type = get_zoho_tax_info(voucher_tax_rate, is_interstate)
+                tax_pct_str = str(snap_to_standard_gst(voucher_tax_rate))
 
-            for lname, lamt in expense_lines:
-                account_name = lname if lname else "Purchase"
-                zoho_rows.append({
-                    "Bill Number": vch_no,
-                    "Bill Date": date_str,
-                    "Vendor Name": party_name,
-                    "GST Treatment": gst_treatment,
-                    "GST Identification Number (GSTIN)": gstin,
-                    "Place of Supply": pos_code,
-                    "PurchaseOrder": "",
-                    "Payment Terms": payment_terms_num,
-                    "Payment Terms Label": payment_terms_label,
-                    "Due Date": due_date,
-                    "Currency Code": CURRENCY,
-                    "Exchange Rate": "1",
-                    "Account": account_name,
-                    "Item Name": "",
-                    "SKU": "",
-                    "Item Desc": notes or account_name,
-                    "Item Type": "service",
-                    "HSN/SAC": "",
-                    "Quantity": "1",
-                    "Usage unit": "pcs",
-                    "Rate": f"{lamt:.2f}",
-                    "Item Price": f"{lamt:.2f}",
-                    "Is Inclusive Tax": "false",
-                    "Tax Name": tax_name,
-                    "Tax Percentage": tax_pct_str,
-                    "Tax Type": tax_type,
-                    "Tax Exemption Reason": tax_exemption_reason,
-                    "Item Tax": tax_name,
-                    "Item Tax Type": tax_type,
-                    "Item Tax %": tax_pct_str,
-                    "Item Tax Exemption Reason": tax_exemption_reason,
-                    "Branch Name": "Head Office"
-                })
+                for lname, lamt in expense_lines:
+                    account_name = lname if lname else "Purchase"
+                    zoho_rows.append({
+                        "Bill Number": vch_no,
+                        "Bill Date": date_str,
+                        "Vendor Name": party_name,
+                        "GST Treatment": gst_treatment,
+                        "GST Identification Number (GSTIN)": gstin,
+                        "Place of Supply": pos_code,
+                        "PurchaseOrder": "",
+                        "Payment Terms": payment_terms_num,
+                        "Payment Terms Label": payment_terms_label,
+                        "Due Date": due_date,
+                        "Currency Code": CURRENCY,
+                        "Exchange Rate": "1",
+                        "Account": account_name,
+                        "Item Name": "",
+                        "SKU": "",
+                        "Item Desc": notes or account_name,
+                        "Item Type": "service",
+                        "HSN/SAC": "",
+                        "Quantity": "1",
+                        "Usage unit": "pcs",
+                        "Rate": f"{lamt:.2f}",
+                        "Item Price": f"{lamt:.2f}",
+                        "Is Inclusive Tax": "false",
+                        "Tax Name": tax_name,
+                        "Tax Percentage": tax_pct_str,
+                        "Tax Type": tax_type,
+                        "Tax Exemption Reason": tax_exemption_reason,
+                        "Item Tax": tax_name,
+                        "Item Tax Type": tax_type,
+                        "Item Tax %": tax_pct_str,
+                        "Item Tax Exemption Reason": tax_exemption_reason,
+                        "Branch Name": "Head Office"
+                    })
 
     _write_split_csv(base_csv, BILL_HEADERS, zoho_rows, "Bills")
     logger.info(f"Total bill line items written: {len(zoho_rows)}")
     logger.info(f"Unique bills written: {len(set(r['Bill Number'] for r in zoho_rows))}")
     return zoho_rows
+
+
