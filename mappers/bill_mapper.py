@@ -5,7 +5,15 @@ import csv
 import logging
 from lxml import etree
 
-from config.constants import CURRENCY, GST_STATE_MAP, BILL_HEADERS
+from config.constants import CURRENCY, GST_STATE_MAP, BILL_HEADERS, TALLY_UNIT_TO_ZOHO
+
+def _clean_unit(tally_unit: str) -> str:
+    if not tally_unit:
+        return "pcs"
+    key = tally_unit.strip().lower()
+    if "/" in key:
+        key = key.split("/")[0].strip()
+    return TALLY_UNIT_TO_ZOHO.get(key, key[:10])
 from utils.gst_helpers import get_state_code, infer_gst_treatment
 from utils.date_helpers import format_date, calculate_due_date, get_fy_batches
 from utils.math_helpers import clean_float, parse_qty_unit, parse_rate, parse_due_days
@@ -51,18 +59,25 @@ def query_purchase_vouchers(tally_client, f_date: str, t_date: str):
     return tally_client.send_request(payload)
 
 def load_item_metadata(out_dir: str) -> dict:
-    """Load Item Name -> (Product Type, Item Type) mapping from zoho_items_import.csv."""
+    """Load Item Name -> (Product Type, Item Type, Canonical Item Name) mapping from zoho_items_import.csv."""
     items_csv = os.path.join(out_dir, "zoho_items_import.csv")
+    unlocked_csv = os.path.join(out_dir, "zoho_items_import_unlocked.csv")
+    if os.path.exists(unlocked_csv):
+        if not os.path.exists(items_csv) or os.path.getmtime(unlocked_csv) >= os.path.getmtime(items_csv):
+            items_csv = unlocked_csv
     mapping = {}
     if os.path.exists(items_csv):
         with open(items_csv, "r", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
             for r in reader:
-                name = r.get("Item Name", "").strip().lower()
+                iname = r.get("Item Name", "").strip()
                 ptype = r.get("Product Type", "").strip().lower()
                 itype = r.get("Item Type", "").strip().lower()
-                if name:
-                    mapping[name] = (ptype, itype)
+                uunit = r.get("Usage unit", "").strip().lower()
+                if iname:
+                    mapping[(iname.lower(), uunit)] = (ptype, itype, iname)
+                    if iname.lower() not in mapping:
+                        mapping[iname.lower()] = (ptype, itype, iname)
     return mapping
 
 def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
@@ -239,9 +254,12 @@ def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
                     purchase_acc_node = ie.find(".//ACCOUNTINGALLOCATIONS.LIST/LEDGERNAME")
                     purchase_acc = (purchase_acc_node.text or "").strip() if (purchase_acc_node is not None and purchase_acc_node.text) else "Cost of Goods Sold"
 
-                    item_info = item_meta.get(item_name.strip().lower())
+                    c_unit = _clean_unit(unit_val).strip().lower()
+                    item_key = (item_name.strip().lower(), c_unit)
+                    item_info = item_meta.get(item_key) or item_meta.get(item_name.strip().lower())
                     if item_info:
-                        ptype_v, itype_v = item_info
+                        ptype_v, itype_v, canonical_name = item_info
+                        final_item_name = canonical_name
                         if ptype_v == "goods" and itype_v == "inventory":
                             bill_account = "Inventory Asset"
                             bill_item_type = "goods"
@@ -249,6 +267,7 @@ def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
                             bill_account = purchase_acc
                             bill_item_type = "service"
                     else:
+                        final_item_name = item_name
                         bill_account = "Inventory Asset"
                         bill_item_type = "goods"
 
@@ -288,7 +307,7 @@ def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
                         "Currency Code": CURRENCY,
                         "Exchange Rate": "1",
                         "Account": bill_account,
-                        "Item Name": item_name,
+                        "Item Name": final_item_name,
                         "SKU": "",
                         "Item Desc": desc or notes or item_name,
                         "Item Type": bill_item_type,

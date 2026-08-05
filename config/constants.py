@@ -98,8 +98,55 @@ CREDIT_NORMAL = {
 # Zoho-predefined system accounts that we must exclude from COA to prevent duplication error
 ZOHO_SYSTEM_ACCOUNTS = {
     "other expenses", "petty cash", "advance tax", "discount", "shipping charge",
-    "sales", "interest income", "cost of goods sold"
+    "sales", "interest income", "cost of goods sold",
+    "travel expense", "travel expenses",
+    "advertising and marketing", "advertising & marketing",
+    "automobile expense", "bad debt", "bank fees and charges",
+    "consulting expense", "depreciation expense",
+    "it and internet expenses", "it & internet expenses",
+    "janitorial expense", "meals and entertainment",
+    "office supplies", "postage", "printing and stationery",
+    "rent expense", "repairs and maintenance",
+    "salaries and employee wages", "telephone expense",
+    "uncategorized", "ask my accountant", "reconciliation discrepancies",
+    "retained earnings", "opening balance adjustments", "exchange gain or loss",
+    "unearned revenue", "undeposited funds", "drawings", "purchase discount",
+    "general expense", "general expenses", "insurance expense", "legal expense"
 }
+
+# Mapping common variations/pluralizations to exact Zoho pre-defined system account names
+ZOHO_SYSTEM_CANONICAL = {
+    "travel expense": "Travel Expense",
+    "travel expenses": "Travel Expense",
+    "other expense": "Other Expenses",
+    "other expenses": "Other Expenses",
+    "general expense": "Other Expenses",
+    "general expenses": "Other Expenses",
+    "advertising & marketing": "Advertising and Marketing",
+    "advertising and marketing": "Advertising and Marketing",
+    "automobile expense": "Automobile Expense",
+    "bad debt": "Bad Debt",
+    "bank fees and charges": "Bank Fees and Charges",
+    "consulting expense": "Consulting Expense",
+    "depreciation expense": "Depreciation Expense",
+    "it & internet expenses": "IT and Internet Expenses",
+    "it and internet expenses": "IT and Internet Expenses",
+    "janitorial expense": "Janitorial Expense",
+    "meals and entertainment": "Meals and Entertainment",
+    "office supplies": "Office Supplies",
+    "postage": "Postage",
+    "printing & stationery": "Printing and Stationery",
+    "printing and stationery": "Printing and Stationery",
+    "rent expense": "Rent Expense",
+    "repairs and maintenance": "Repairs and Maintenance",
+    "salaries and employee wages": "Salaries and Employee Wages",
+    "telephone expense": "Telephone Expense",
+    "cost of goods sold": "Cost of Goods Sold",
+    "sales": "Sales",
+    "discount": "Discount",
+    "petty cash": "Petty Cash",
+}
+
 
 # Zoho-restricted types whose opening balances must NOT be imported via COA CSV
 ZOHO_NO_OB_TYPES = {"Accounts Receivable", "Accounts Payable", "Bank", "Credit Card"}

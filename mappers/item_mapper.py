@@ -274,22 +274,27 @@ def run_item_mapping(tally_client, out_dir: str) -> list:
         if not raw_name:
             continue
 
-        # Deduplicate item names so every row in CSV has a unique Item Name
-        if raw_name in seen_item_names:
-            seen_item_names[raw_name] += 1
-            name = f"{raw_name} - {seen_item_names[raw_name]}"
+        raw_unit = _txt(item_elem, "BASEUNITS")
+        zoho_unit = _clean_unit(raw_unit)
+
+        # Deduplicate item names case-insensitively so every row in CSV has a unique Item Name for Zoho
+        raw_name_lower = raw_name.strip().lower()
+        if raw_name_lower in seen_item_names:
+            seen_item_names[raw_name_lower] += 1
+            count = seen_item_names[raw_name_lower]
+            if zoho_unit:
+                name = f"{raw_name} ({zoho_unit})"
+            else:
+                name = f"{raw_name} - {count}"
             logger.info(f"Deduplicated item name '{raw_name}' -> '{name}'")
         else:
-            seen_item_names[raw_name] = 1
+            seen_item_names[raw_name_lower] = 1
             name = raw_name
 
         parent = _txt(item_elem, "PARENT")
         description = _txt(item_elem, "DESCRIPTION")
         if not description:
             description = name
-
-        raw_unit = _txt(item_elem, "BASEUNITS")
-        zoho_unit = _clean_unit(raw_unit)
 
         std_selling_raw = _txt(item_elem, "STANDARDSELLINGPRICE")
         std_cost_raw = _txt(item_elem, "STANDARDCOSTPRICE")

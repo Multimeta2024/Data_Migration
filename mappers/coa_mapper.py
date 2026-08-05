@@ -7,7 +7,7 @@ import logging
 from config.settings import OUTPUT_DIR
 from config.constants import (
     CURRENCY, TALLY_RESERVED_TO_ZOHO, NO_SUBACCOUNT_TYPES,
-    ZOHO_SYSTEM_ACCOUNTS, COA_HEADERS, DEBIT_NORMAL
+    ZOHO_SYSTEM_ACCOUNTS, ZOHO_SYSTEM_CANONICAL, COA_HEADERS, DEBIT_NORMAL
 )
 from utils.math_helpers import clean_float
 
@@ -228,6 +228,14 @@ def run_coa_mapping(ledgers, gmap, out_dir):
     rows = []
     parent_accounts = {}
     
+    def resolve_parent_name(p_name: str) -> str:
+        if not p_name:
+            return ""
+        pk = p_name.lower().strip()
+        if pk in ZOHO_SYSTEM_CANONICAL:
+            return ZOHO_SYSTEM_CANONICAL[pk]
+        return p_name
+
     # 1. Pre-pass to discover all parent accounts
     for l in ledgers:
         t_parent = l["tally_parent"]
@@ -246,7 +254,7 @@ def run_coa_mapping(ledgers, gmap, out_dir):
                     p_child = custom_path[idx + 1]
                     if p_child.lower().strip() not in ZOHO_SYSTEM_ACCOUNTS:
                         if p_child not in parent_accounts:
-                            parent_accounts[p_child] = {"parent": p_curr, "zoho_type": zoho_type}
+                            parent_accounts[p_child] = {"parent": resolve_parent_name(p_curr), "zoho_type": zoho_type}
 
     collision_parent_names = {p.lower().strip() for p in parent_accounts.keys()}
 
@@ -268,7 +276,7 @@ def run_coa_mapping(ledgers, gmap, out_dir):
         zoho_parent = None
         if zoho_type not in NO_SUBACCOUNT_TYPES:
             if len(custom_path) > 0:
-                zoho_parent = custom_path[-1]
+                zoho_parent = resolve_parent_name(custom_path[-1])
 
         if name.lower().strip() in ZOHO_SYSTEM_ACCOUNTS:
             continue
