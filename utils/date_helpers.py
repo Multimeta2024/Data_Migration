@@ -24,6 +24,26 @@ def calculate_due_date(date_str: str, due_days: int) -> str:
         return date_str
 
 
+def get_fy_short(date_str: str) -> str:
+    """Given an ISO date string (YYYY-MM-DD), returns FY short string like '1718'."""
+    if not date_str or len(date_str) < 7:
+        return ""
+    try:
+        parts = date_str.split("-")
+        year = int(parts[0])
+        month = int(parts[1])
+        if month >= 4:
+            s_year = year % 100
+            e_year = (year + 1) % 100
+        else:
+            s_year = (year - 1) % 100
+            e_year = year % 100
+        return f"{s_year:02d}{e_year:02d}"
+    except Exception:
+        return ""
+
+
+
 def _dmy_to_date(dmy: str) -> datetime:
     """Parse D-M-YYYY string (e.g. '1-4-2016') into a datetime object."""
     parts = dmy.strip().split("-")
@@ -37,17 +57,11 @@ def _date_to_dmy(dt: datetime) -> str:
 
 def get_fy_batches(f_date: str, t_date: str) -> list:
     """
-    Split a full date range (D-M-YYYY format) into Indian financial year
-    windows of April 1 → March 31.
+    Split a full date range (D-M-YYYY format) into 6-month half-year
+    windows (April 1 → Sept 30, Oct 1 → March 31).
 
-    This prevents Tally from timing out on large all-history queries by
-    sending one financial year per request and combining the results.
-
-    Returns list of (batch_from, batch_to) tuples in D-M-YYYY format.
-
-    Example:
-        get_fy_batches('1-4-2016', '2-2-2026')
-        → [('1-4-2016','31-3-2017'), ('1-4-2017','31-3-2018'), ..., ('1-4-2025','2-2-2026')]
+    This prevents Tally from timing out on large queries by
+    sending smaller date range requests and combining the results.
     """
     start = _dmy_to_date(f_date)
     end   = _dmy_to_date(t_date)
@@ -56,20 +70,17 @@ def get_fy_batches(f_date: str, t_date: str) -> list:
     current = start
 
     while current <= end:
-        # Determine the end of this financial year (March 31)
-        if current.month >= 4:
-            fy_end = datetime(current.year + 1, 3, 31)
+        if current.month >= 4 and current.month <= 9:
+            chunk_end = datetime(current.year, 9, 30)
+        elif current.month >= 10:
+            chunk_end = datetime(current.year + 1, 3, 31)
         else:
-            fy_end = datetime(current.year, 3, 31)
+            chunk_end = datetime(current.year, 3, 31)
 
-        batch_end = min(fy_end, end)
+        batch_end = min(chunk_end, end)
         batches.append((_date_to_dmy(current), _date_to_dmy(batch_end)))
 
-        # Move to April 1 of next FY
-        next_fy_start = datetime(fy_end.year, 4, 1)
-        if next_fy_start > end:
-            break
-        current = next_fy_start
+        current = batch_end + timedelta(days=1)
 
     return batches
 

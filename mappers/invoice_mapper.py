@@ -10,10 +10,32 @@ from lxml import etree
 from config.constants import CURRENCY, GST_STATE_MAP, INVOICE_HEADERS
 from utils.gst_helpers import get_state_code, infer_gst_treatment
 from utils.date_helpers import format_date, calculate_due_date, get_fy_batches
-from utils.math_helpers import clean_float, parse_qty_unit, parse_rate, parse_due_days
+from utils.math_helpers import clean_float, parse_qty_unit, parse_rate, parse_due_days, clean_unit
 from core.xml_parser import sanitize_xml
 
 logger = logging.getLogger(__name__)
+
+def load_item_metadata(out_dir: str) -> dict:
+    """Load Item Name -> (Product Type, Item Type, Canonical Item Name, Usage Unit) mapping from zoho_items_import.csv."""
+    items_csv = os.path.join(out_dir, "zoho_items_import.csv")
+    unlocked_csv = os.path.join(out_dir, "zoho_items_import_unlocked.csv")
+    if os.path.exists(unlocked_csv):
+        if not os.path.exists(items_csv) or os.path.getmtime(unlocked_csv) >= os.path.getmtime(items_csv):
+            items_csv = unlocked_csv
+    mapping = {}
+    if os.path.exists(items_csv):
+        with open(items_csv, "r", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            for r in reader:
+                iname = r.get("Item Name", "").strip()
+                ptype = r.get("Product Type", "").strip().lower()
+                itype = r.get("Item Type", "").strip().lower()
+                uunit = r.get("Usage unit", "").strip()
+                if iname:
+                    mapping[(iname.lower(), uunit.lower())] = (ptype, itype, iname, uunit)
+                    if iname.lower() not in mapping:
+                        mapping[iname.lower()] = (ptype, itype, iname, uunit)
+    return mapping
 
 _TAX_LEDGER_REGEX = re.compile(
     r"\b(CGST|SGST|IGST|UTGST|OUTPUT GST|INPUT GST|TAX|DUTIES|CESS|VAT|ROUND OFF|ROUNDOFF)\b",
@@ -105,6 +127,28 @@ def query_sales_vouchers(tally_client, f_date: str, t_date: str):
     </ENVELOPE>"""
     return tally_client.send_request(payload)
 
+def load_customer_metadata(out_dir: str) -> dict:
+    """Load Customer Name -> (Place Of Supply, Billing State, GSTIN) from zoho_customers_import.csv."""
+    cust_csv = os.path.join(out_dir, "zoho_customers_import.csv")
+    if not os.path.exists(cust_csv):
+        cust_csv = os.path.join(out_dir, "tally_dumps", "zoho_customers_import.csv")
+    mapping = {}
+    if os.path.exists(cust_csv):
+        with open(cust_csv, "r", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            for r in reader:
+                cname = r.get("Display Name", "").strip()
+                pos = r.get("Place of Supply", "").strip()
+                state = r.get("Billing State", "").strip()
+                gstin = r.get("GST Identification Number (GSTIN)", "").strip()
+                if cname:
+                    mapping[cname.lower()] = {
+                        "place_of_supply": pos,
+                        "state": state,
+                        "gstin": gstin
+                    }
+    return mapping
+
 # Maximum rows per Zoho import file (Zoho Books limit is ~25,000; we use 20,000 for safety)
 _ZOHO_MAX_ROWS = 20_000
 
@@ -159,6 +203,8 @@ def run_invoice_mapping(tally_client, out_dir, f_date: str, t_date: str):
     to avoid Tally timeouts, maps them to Zoho invoices, and writes CSV(s).
     """
     base_csv = os.path.join(out_dir, "zoho_invoices_import.csv")
+    item_meta = load_item_metadata(out_dir)
+    customer_meta = load_customer_metadata(out_dir)
     batches = get_fy_batches(f_date, t_date)
     logger.info(f"Fetching invoices in {len(batches)} FY batch(es): {f_date} → {t_date}")
 
@@ -243,13 +289,24 @@ def run_invoice_mapping(tally_client, out_dir, f_date: str, t_date: str):
             else:
                 gst_treatment = "business_unregistered"
 
+            c_info = customer_meta.get(party_name.strip().lower(), {})
+            c_pos = c_info.get("place_of_supply", "")
+            c_state = c_info.get("state", "")
+            c_gstin = c_info.get("gstin", "")
+
+            cust_state_code = None
+            if gstin and len(gstin) >= 2:
+                cust_state_code = get_state_code(gstin[:2])
+            if not cust_state_code and c_gstin and len(c_gstin) >= 2:
+                cust_state_code = get_state_code(c_gstin[:2])
+            if not cust_state_code and c_pos:
+                cust_state_code = get_state_code(c_pos)
+            if not cust_state_code and c_state:
+                cust_state_code = get_state_code(c_state)
+
             pos_node = v.find("PLACEOFSUPPLY")
             pos_str = (pos_node.text or "").strip() if pos_node is not None else ""
-            pos_code = get_state_code(pos_str)
-            if not pos_code and gstin and len(gstin) >= 2 and gstin[:2].isdigit():
-                pos_code = GST_STATE_MAP.get(gstin[:2], "TN")
-            if not pos_code:
-                pos_code = "TN"
+            tally_pos_code = get_state_code(pos_str)
 
             narration_node = v.find("NARRATION")
             notes = (narration_node.text or "").strip() if narration_node is not None else ""
@@ -270,9 +327,10 @@ def run_invoice_mapping(tally_client, out_dir, f_date: str, t_date: str):
             payment_terms_label = f"Net {due_days}" if due_days > 0 else "Due on Receipt"
             due_date = calculate_due_date(date_str, due_days)
 
-            # Voucher-level tax rate calculation
+            # Voucher-level tax rate calculation & IGST check
             total_tax_amt = 0.0
             total_revenue_amt = 0.0
+            has_igst_ledger = False
             ledger_entries = v.findall(".//LEDGERENTRIES.LIST")
             for le in ledger_entries:
                 lname_node = le.find("LEDGERNAME")
@@ -286,6 +344,8 @@ def run_invoice_mapping(tally_client, out_dir, f_date: str, t_date: str):
                     continue
                 if "CGST" in lname.upper() or "SGST" in lname.upper() or "IGST" in lname.upper():
                     total_tax_amt += abs(lamt)
+                    if "IGST" in lname.upper():
+                        has_igst_ledger = True
                 elif not is_tax_ledger(lname):
                     total_revenue_amt += abs(lamt)
 
@@ -296,7 +356,18 @@ def run_invoice_mapping(tally_client, out_dir, f_date: str, t_date: str):
             inv_entries = [ie for ie in v.findall(".//ALLINVENTORYENTRIES.LIST")
                            if ie.find("STOCKITEMNAME") is not None and (ie.find("STOCKITEMNAME").text or "").strip()]
 
-            is_interstate = (pos_code != "TN")
+            if cust_state_code and cust_state_code != "TN":
+                pos_code = cust_state_code
+                is_interstate = True
+            elif tally_pos_code and tally_pos_code != "TN":
+                pos_code = tally_pos_code
+                is_interstate = True
+            elif has_igst_ledger:
+                pos_code = cust_state_code if cust_state_code else "TN"
+                is_interstate = True
+            else:
+                pos_code = cust_state_code if cust_state_code else (tally_pos_code if tally_pos_code else "TN")
+                is_interstate = (pos_code != "TN")
 
             # CASE 1: Item Invoice (contains stock items)
             if len(inv_entries) > 0:
@@ -317,6 +388,17 @@ def run_invoice_mapping(tally_client, out_dir, f_date: str, t_date: str):
                     item_price = (amt_val / qty_val) if qty_val != 0 else parse_rate(rate_str)
                     sales_acc_node = ie.find(".//ACCOUNTINGALLOCATIONS.LIST/LEDGERNAME")
                     sales_acc = (sales_acc_node.text or "").strip() if (sales_acc_node is not None and sales_acc_node.text) else "Sales"
+
+                    c_unit = clean_unit(unit_val)
+                    item_key = (item_name.strip().lower(), c_unit.lower())
+                    item_info = item_meta.get(item_key) or item_meta.get(item_name.strip().lower())
+                    if item_info:
+                        ptype_v, itype_v, canonical_name, canonical_unit = item_info
+                        final_item_name = canonical_name
+                        final_unit = canonical_unit or c_unit
+                    else:
+                        final_item_name = item_name
+                        final_unit = c_unit
 
                     cgst_rate = sgst_rate = igst_rate = 0.0
                     for rd in ie.findall(".//RATEDETAILS.LIST"):
@@ -348,9 +430,9 @@ def run_invoice_mapping(tally_client, out_dir, f_date: str, t_date: str):
                         "Place of Supply": pos_code,
                         "Payment Terms": payment_terms_num, "Payment Terms Label": payment_terms_label,
                         "Due Date": due_date, "Currency Code": CURRENCY, "Exchange Rate": "1",
-                        "Account": sales_acc, "Item Name": item_name, "SKU": "",
+                        "Account": sales_acc, "Item Name": final_item_name, "SKU": "",
                         "Item Desc": desc or notes, "Item Type": "goods", "HSN/SAC": hsn,
-                        "Quantity": format_number(qty_val), "Usage unit": unit_val,
+                        "Quantity": format_number(qty_val), "Usage unit": final_unit,
                         "Item Price": format_number(item_price),
                         "Item Tax Exemption Reason": "", "Is Inclusive Tax": "FALSE",
                         "Item Tax": item_tax, "Item Tax Type": item_tax_type,

@@ -59,7 +59,7 @@ def query_purchase_vouchers(tally_client, f_date: str, t_date: str):
     return tally_client.send_request(payload)
 
 def load_item_metadata(out_dir: str) -> dict:
-    """Load Item Name -> (Product Type, Item Type, Canonical Item Name) mapping from zoho_items_import.csv."""
+    """Load Item Name -> (Product Type, Item Type, Canonical Item Name, Usage Unit) mapping from zoho_items_import.csv."""
     items_csv = os.path.join(out_dir, "zoho_items_import.csv")
     unlocked_csv = os.path.join(out_dir, "zoho_items_import_unlocked.csv")
     if os.path.exists(unlocked_csv):
@@ -73,11 +73,33 @@ def load_item_metadata(out_dir: str) -> dict:
                 iname = r.get("Item Name", "").strip()
                 ptype = r.get("Product Type", "").strip().lower()
                 itype = r.get("Item Type", "").strip().lower()
-                uunit = r.get("Usage unit", "").strip().lower()
+                uunit = r.get("Usage unit", "").strip()
                 if iname:
-                    mapping[(iname.lower(), uunit)] = (ptype, itype, iname)
+                    mapping[(iname.lower(), uunit.lower())] = (ptype, itype, iname, uunit)
                     if iname.lower() not in mapping:
-                        mapping[iname.lower()] = (ptype, itype, iname)
+                        mapping[iname.lower()] = (ptype, itype, iname, uunit)
+    return mapping
+
+def load_vendor_metadata(out_dir: str) -> dict:
+    """Load Vendor Name -> (Source Of Supply, Billing State, GSTIN) from zoho_vendors_import.csv."""
+    vend_csv = os.path.join(out_dir, "zoho_vendors_import.csv")
+    if not os.path.exists(vend_csv):
+        vend_csv = os.path.join(out_dir, "tally_dumps", "zoho_vendors_import.csv")
+    mapping = {}
+    if os.path.exists(vend_csv):
+        with open(vend_csv, "r", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            for r in reader:
+                vname = r.get("Display Name", "").strip()
+                sos = r.get("Source Of Supply", "").strip()
+                state = r.get("Billing State", "").strip()
+                gstin = r.get("GST Identification Number (GSTIN)", "").strip()
+                if vname:
+                    mapping[vname.lower()] = {
+                        "source_of_supply": sos,
+                        "state": state,
+                        "gstin": gstin
+                    }
     return mapping
 
 def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
@@ -87,6 +109,7 @@ def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
     """
     base_csv = os.path.join(out_dir, "zoho_bills_import.csv")
     item_meta = load_item_metadata(out_dir)
+    vendor_meta = load_vendor_metadata(out_dir)
     batches = get_fy_batches(f_date, t_date)
     logger.info(f"Fetching bills in {len(batches)} FY batch(es): {f_date} → {t_date}")
     zoho_rows = []
@@ -181,14 +204,25 @@ def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
             else:
                 gst_treatment = "business_unregistered"
                 
+            v_info = vendor_meta.get(party_name.strip().lower(), {})
+            v_sos = v_info.get("source_of_supply", "")
+            v_state = v_info.get("state", "")
+            v_gstin = v_info.get("gstin", "")
+
+            vendor_state_code = None
+            if gstin and len(gstin) >= 2:
+                vendor_state_code = get_state_code(gstin[:2])
+            if not vendor_state_code and v_gstin and len(v_gstin) >= 2:
+                vendor_state_code = get_state_code(v_gstin[:2])
+            if not vendor_state_code and v_sos:
+                vendor_state_code = get_state_code(v_sos)
+            if not vendor_state_code and v_state:
+                vendor_state_code = get_state_code(v_state)
+
             pos_node = v.find("PLACEOFSUPPLY")
             pos_str = (pos_node.text or "").strip() if pos_node is not None else ""
-            pos_code = get_state_code(pos_str)
-            if not pos_code and gstin and len(gstin) >= 2 and gstin[:2].isdigit():
-                pos_code = GST_STATE_MAP.get(gstin[:2], "TN")
-            if not pos_code:
-                pos_code = "TN"
-                
+            tally_pos_code = get_state_code(pos_str)
+
             narration_node = v.find("NARRATION")
             notes = (narration_node.text or "").strip() if narration_node is not None else ""
             
@@ -206,9 +240,10 @@ def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
             payment_terms_label = f"Net {due_days}" if due_days > 0 else "Due on Receipt"
             due_date = calculate_due_date(date_str, due_days)
             
-            # Voucher-level tax rate calculation (fallback)
+            # Voucher-level tax rate calculation (fallback) & IGST presence check
             total_tax_amt = 0.0
             total_expense_amt = 0.0
+            has_igst_ledger = False
             
             for le in ledger_entries:
                 lname = (le.find("LEDGERNAME").text or "").strip() if le.find("LEDGERNAME") is not None else ""
@@ -221,6 +256,8 @@ def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
                     
                 if is_tax_ledger(lname):
                     total_tax_amt += lamt
+                    if "IGST" in lname.upper():
+                        has_igst_ledger = True
                 else:
                     total_expense_amt += lamt
                     
@@ -231,7 +268,19 @@ def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
             inv_entries = [ie for ie in v.findall(".//ALLINVENTORYENTRIES.LIST")
                            if ie.find("STOCKITEMNAME") is not None and (ie.find("STOCKITEMNAME").text or "").strip()]
 
-            is_interstate = (pos_code != "TN")
+            if vendor_state_code and vendor_state_code != "TN":
+                pos_code = vendor_state_code
+                is_interstate = True
+            elif tally_pos_code and tally_pos_code != "TN":
+                pos_code = tally_pos_code
+                is_interstate = True
+            elif has_igst_ledger:
+                pos_code = vendor_state_code if vendor_state_code else "TN"
+                is_interstate = True
+            else:
+                pos_code = vendor_state_code if vendor_state_code else (tally_pos_code if tally_pos_code else "TN")
+                is_interstate = (pos_code != "TN")
+
             tax_exemption_reason = "Out of Scope" if gst_treatment in ("out_of_scope", "non_gst") else ""
 
             # CASE 1: Item Purchase Bill (contains stock items)
@@ -254,12 +303,13 @@ def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
                     purchase_acc_node = ie.find(".//ACCOUNTINGALLOCATIONS.LIST/LEDGERNAME")
                     purchase_acc = (purchase_acc_node.text or "").strip() if (purchase_acc_node is not None and purchase_acc_node.text) else "Cost of Goods Sold"
 
-                    c_unit = _clean_unit(unit_val).strip().lower()
-                    item_key = (item_name.strip().lower(), c_unit)
+                    c_unit = _clean_unit(unit_val).strip()
+                    item_key = (item_name.strip().lower(), c_unit.lower())
                     item_info = item_meta.get(item_key) or item_meta.get(item_name.strip().lower())
                     if item_info:
-                        ptype_v, itype_v, canonical_name = item_info
+                        ptype_v, itype_v, canonical_name, canonical_unit = item_info
                         final_item_name = canonical_name
+                        final_unit = canonical_unit or c_unit
                         if ptype_v == "goods" and itype_v == "inventory":
                             bill_account = "Inventory Asset"
                             bill_item_type = "goods"
@@ -268,6 +318,7 @@ def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
                             bill_item_type = "service"
                     else:
                         final_item_name = item_name
+                        final_unit = c_unit
                         bill_account = "Inventory Asset"
                         bill_item_type = "goods"
 
@@ -290,8 +341,20 @@ def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
                     item_tax_percent = igst_rate if igst_rate > 0 else (cgst_rate + sgst_rate)
                     if item_tax_percent == 0 and voucher_tax_rate > 0:
                         item_tax_percent = voucher_tax_rate
-                    tax_name, tax_type = get_zoho_tax_info(item_tax_percent, is_interstate)
+                    tax_name, tax_type = get_zoho_tax_info(item_tax_percent, is_interstate or (igst_rate > 0))
                     tax_pct_str = str(snap_to_standard_gst(item_tax_percent))
+                    is_rc = "true" if gst_treatment in ("business_unregistered", "overseas") else "false"
+                    if is_rc == "true":
+                        rc_tax_name = tax_name
+                        rc_tax_rate = tax_pct_str
+                        rc_tax_type = tax_type
+                        line_tax_name = line_tax_pct = line_tax_type = line_exemption = ""
+                    else:
+                        rc_tax_name = rc_tax_rate = rc_tax_type = ""
+                        line_tax_name = tax_name
+                        line_tax_pct = tax_pct_str
+                        line_tax_type = tax_type
+                        line_exemption = tax_exemption_reason
 
                     zoho_rows.append({
                         "Bill Number": vch_no,
@@ -313,18 +376,22 @@ def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
                         "Item Type": bill_item_type,
                         "HSN/SAC": hsn,
                         "Quantity": format_number(qty_val),
-                        "Usage unit": unit_val,
+                        "Usage unit": final_unit,
                         "Rate": f"{item_price:.2f}",
                         "Item Price": f"{item_price:.2f}",
                         "Is Inclusive Tax": "false",
-                        "Tax Name": tax_name,
-                        "Tax Percentage": tax_pct_str,
-                        "Tax Type": tax_type,
-                        "Tax Exemption Reason": tax_exemption_reason,
-                        "Item Tax": tax_name,
-                        "Item Tax Type": tax_type,
-                        "Item Tax %": tax_pct_str,
-                        "Item Tax Exemption Reason": tax_exemption_reason,
+                        "Is Reverse Charge": is_rc,
+                        "Reverse Charge Tax Name": rc_tax_name,
+                        "Reverse Charge Tax Rate": rc_tax_rate,
+                        "Reverse Charge Tax Type": rc_tax_type,
+                        "Tax Name": line_tax_name,
+                        "Tax Percentage": line_tax_pct,
+                        "Tax Type": line_tax_type,
+                        "Tax Exemption Reason": line_exemption,
+                        "Item Tax": line_tax_name,
+                        "Item Tax Type": line_tax_type,
+                        "Item Tax %": line_tax_pct,
+                        "Item Tax Exemption Reason": line_exemption,
                         "Branch Name": "Head Office"
                     })
 
@@ -342,6 +409,19 @@ def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
                     if lamt == 0:
                         continue
                     tax_name, tax_type = get_zoho_tax_info(0.0, is_interstate)
+                    is_rc = "true" if gst_treatment in ("business_unregistered", "overseas") else "false"
+                    if is_rc == "true":
+                        rc_tax_name = tax_name
+                        rc_tax_rate = "0"
+                        rc_tax_type = tax_type
+                        line_tax_name = line_tax_pct = line_tax_type = line_exemption = ""
+                    else:
+                        rc_tax_name = rc_tax_rate = rc_tax_type = ""
+                        line_tax_name = tax_name
+                        line_tax_pct = "0"
+                        line_tax_type = tax_type
+                        line_exemption = tax_exemption_reason
+
                     zoho_rows.append({
                         "Bill Number": vch_no,
                         "Bill Date": date_str,
@@ -366,14 +446,18 @@ def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
                         "Rate": f"{lamt:.2f}",
                         "Item Price": f"{lamt:.2f}",
                         "Is Inclusive Tax": "false",
-                        "Tax Name": tax_name,
-                        "Tax Percentage": "0",
-                        "Tax Type": tax_type,
-                        "Tax Exemption Reason": tax_exemption_reason,
-                        "Item Tax": tax_name,
-                        "Item Tax Type": tax_type,
-                        "Item Tax %": "0",
-                        "Item Tax Exemption Reason": tax_exemption_reason,
+                        "Is Reverse Charge": is_rc,
+                        "Reverse Charge Tax Name": rc_tax_name,
+                        "Reverse Charge Tax Rate": rc_tax_rate,
+                        "Reverse Charge Tax Type": rc_tax_type,
+                        "Tax Name": line_tax_name,
+                        "Tax Percentage": line_tax_pct,
+                        "Tax Type": line_tax_type,
+                        "Tax Exemption Reason": line_exemption,
+                        "Item Tax": line_tax_name,
+                        "Item Tax Type": line_tax_type,
+                        "Item Tax %": line_tax_pct,
+                        "Item Tax Exemption Reason": line_exemption,
                         "Branch Name": "Head Office"
                     })
 
@@ -410,6 +494,18 @@ def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
 
                 tax_name, tax_type = get_zoho_tax_info(voucher_tax_rate, is_interstate)
                 tax_pct_str = str(snap_to_standard_gst(voucher_tax_rate))
+                is_rc = "true" if gst_treatment in ("business_unregistered", "overseas") else "false"
+                if is_rc == "true":
+                    rc_tax_name = tax_name
+                    rc_tax_rate = tax_pct_str
+                    rc_tax_type = tax_type
+                    line_tax_name = line_tax_pct = line_tax_type = line_exemption = ""
+                else:
+                    rc_tax_name = rc_tax_rate = rc_tax_type = ""
+                    line_tax_name = tax_name
+                    line_tax_pct = tax_pct_str
+                    line_tax_type = tax_type
+                    line_exemption = tax_exemption_reason
 
                 for lname, lamt in expense_lines:
                     account_name = lname if lname else "Purchase"
@@ -437,14 +533,18 @@ def run_bill_mapping(tally_client, out_dir, f_date: str, t_date: str):
                         "Rate": f"{lamt:.2f}",
                         "Item Price": f"{lamt:.2f}",
                         "Is Inclusive Tax": "false",
-                        "Tax Name": tax_name,
-                        "Tax Percentage": tax_pct_str,
-                        "Tax Type": tax_type,
-                        "Tax Exemption Reason": tax_exemption_reason,
-                        "Item Tax": tax_name,
-                        "Item Tax Type": tax_type,
-                        "Item Tax %": tax_pct_str,
-                        "Item Tax Exemption Reason": tax_exemption_reason,
+                        "Is Reverse Charge": is_rc,
+                        "Reverse Charge Tax Name": rc_tax_name,
+                        "Reverse Charge Tax Rate": rc_tax_rate,
+                        "Reverse Charge Tax Type": rc_tax_type,
+                        "Tax Name": line_tax_name,
+                        "Tax Percentage": line_tax_pct,
+                        "Tax Type": line_tax_type,
+                        "Tax Exemption Reason": line_exemption,
+                        "Item Tax": line_tax_name,
+                        "Item Tax Type": line_tax_type,
+                        "Item Tax %": line_tax_pct,
+                        "Item Tax Exemption Reason": line_exemption,
                         "Branch Name": "Head Office"
                     })
 

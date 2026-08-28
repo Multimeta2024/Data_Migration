@@ -185,7 +185,7 @@ STATE_TO_CODE = {
     "karnataka": "KA", "goa": "GA", "lakshadweep": "LD", "kerala": "KL",
     "tamil nadu": "TN", "tamilnadu": "TN", "puducherry": "PY", "pondicherry": "PY",
     "andaman and nicobar islands": "AN", "andaman & nicobar islands": "AN",
-    "telangana": "TS", "andhra pradesh (new)": "AD", "ladakh": "LA"
+    "telangana": "TS", "tg": "TS", "andhra pradesh (new)": "AD", "ladakh": "LA"
 }
 
 # ---------------------------------------------------------------------------
@@ -306,7 +306,8 @@ BILL_HEADERS = [
     "Currency Code", "Exchange Rate",
     "Account", "Item Name", "SKU", "Item Desc", "Item Type", "HSN/SAC",
     "Quantity", "Usage unit", "Rate", "Item Price",
-    "Is Inclusive Tax", "Tax Name", "Tax Percentage", "Tax Type", "Tax Exemption Reason", "Item Tax", "Item Tax Type", "Item Tax %", "Item Tax Exemption Reason",
+    "Is Inclusive Tax", "Is Reverse Charge", "Reverse Charge Tax Name", "Reverse Charge Tax Rate", "Reverse Charge Tax Type",
+    "Tax Name", "Tax Percentage", "Tax Type", "Tax Exemption Reason", "Item Tax", "Item Tax Type", "Item Tax %", "Item Tax Exemption Reason",
     "Branch Name"
 ]
 
@@ -326,7 +327,7 @@ PAYMENT_HEADERS = [
 VENDOR_PAYMENT_HEADERS = [
     "Payment Number", "Date", "Vendor Name", "Mode", "Paid Through",
     "Amount", "Exchange Rate", "Reference Number", "Description",
-    "Bill Number", "Bill Date", "Amount Applied to Bill",
+    "Bill Number", "Bill Date", "Bill Amount",
     "Bank Charges", "Tax Account", "Branch Name"
 ]
 

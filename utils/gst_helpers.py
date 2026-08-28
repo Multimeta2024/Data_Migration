@@ -22,7 +22,10 @@ def get_state_code(state_str: str) -> str:
     for k, v in STATE_TO_CODE.items():
         if "".join(k.split()) == s_clean:
             return v
-    return state_str.strip().upper()[:5]
+    res = state_str.strip().upper()[:5]
+    if len(res) == 2 and res.isalpha():
+        return res
+    return "TN"
 
 def infer_gst_treatment(gstin: str) -> str:
     """Infers Zoho GST treatment string based on the shape of a GSTIN."""

@@ -1,6 +1,14 @@
-# utils/math_helpers.py
-
 import re
+from config.constants import TALLY_UNIT_TO_ZOHO
+
+def clean_unit(tally_unit: str) -> str:
+    """Normalises a Tally UOM string to a Zoho-compatible unit (e.g. 'Kgs' -> 'kg', 'Nos' -> 'pcs')."""
+    if not tally_unit:
+        return "pcs"
+    key = tally_unit.strip().lower()
+    if "/" in key:
+        key = key.split("/")[0].strip()
+    return TALLY_UNIT_TO_ZOHO.get(key, key[:10])
 
 def clean_float(val_str: str) -> float:
     """Safely converts string to float, removing commas."""
