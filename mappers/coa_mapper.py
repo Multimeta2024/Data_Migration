@@ -150,15 +150,36 @@ def parse_ledgers(ledgers_path: str) -> list:
         lang = item.get("LANGUAGENAME.LIST", {})
         name_list = lang.get("NAME.LIST", {}) if isinstance(lang, dict) else {}
         name = ""
+
+        def _extract_name_value(val) -> str:
+            """Safely extract a string from a NAME field that may be str, dict, or list."""
+            if isinstance(val, str):
+                return val.strip()
+            if isinstance(val, dict):
+                return val.get("_text", "").strip() or val.get("NAME", "").strip()
+            if isinstance(val, list):
+                # Multiple <NAME> tags — pick the first meaningful non-artifact value
+                _ARTIFACTS = {"", "]", "[", ",", ".", "'", "\""}
+                for entry in val:
+                    candidate = _extract_name_value(entry)
+                    if candidate and candidate not in _ARTIFACTS:
+                        return candidate
+            return ""
+
         if isinstance(name_list, dict):
-            name = name_list.get("NAME", "")
+            name = _extract_name_value(name_list.get("NAME", ""))
         elif isinstance(name_list, list) and name_list:
-            name = name_list[0].get("NAME", "") if isinstance(name_list[0], dict) else ""
+            first = name_list[0]
+            name = _extract_name_value(first.get("NAME", "") if isinstance(first, dict) else first)
+
         if not name:
             name = item.get("RESERVEDNAME", "") or item.get("NAME", "")
+            name = _extract_name_value(name)
+
         name = str(name).strip()
         if not name:
             continue
+
 
         parent_raw = item.get("PARENT", {})
         parent = parent_raw.get("_text", "").strip() if isinstance(parent_raw, dict) else str(parent_raw).strip()

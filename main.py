@@ -7,6 +7,7 @@ from datetime import datetime, timezone, timedelta
 from lxml import etree
 
 from config.settings import TALLY_HOST, TALLY_PORT, TALLY_TIMEOUT, OUTPUT_DIR
+from config.constants import CURRENCY
 from core.tally_client import TallyClient
 from core.xml_parser import sanitize_xml, etree_to_dict
 from mappers.coa_mapper import build_group_map, parse_ledgers, run_coa_mapping
@@ -24,20 +25,33 @@ logger = logging.getLogger(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
-def get_active_company(tally: TallyClient) -> str:
-    """Fetch active company name from Tally."""
-    payload = """<ENVELOPE>
+def fetch_company_info(tally: TallyClient) -> tuple:
+    """Fetch active company name and base currency from Tally.
+
+    Uses two separate Tally requests:
+      1. Company collection  → company name
+      2. Currency collection → base currency formal name (e.g. 'INR')
+         The Currency master's MAILINGNAME field holds the ISO code shown
+         as "Formal name" in the Tally Prime Company master screen.
+
+    Returns:
+        (company_name: str, base_currency: str)
+        Falls back to CURRENCY constant if Tally does not return a value.
+    """
+    # ── Step 1: Company name ──────────────────────────────────────────────
+    company_name = "UnknownCompany"
+    company_payload = """<ENVELOPE>
     <HEADER>
         <VERSION>1</VERSION>
         <TALLYREQUEST>Export Data</TALLYREQUEST>
         <TYPE>Collection</TYPE>
-        <ID>CompanyNameCollection</ID>
+        <ID>CompanyInfoCollection</ID>
     </HEADER>
     <BODY>
         <DESC>
             <TDL>
                 <TDLMESSAGE>
-                    <COLLECTION NAME="CompanyNameCollection">
+                    <COLLECTION NAME="CompanyInfoCollection">
                         <TYPE>Company</TYPE>
                         <FETCH>NAME, BASICCOMPANYNAME</FETCH>
                     </COLLECTION>
@@ -47,7 +61,7 @@ def get_active_company(tally: TallyClient) -> str:
     </BODY>
 </ENVELOPE>"""
     try:
-        resp_xml = tally.send_request(payload)
+        resp_xml = tally.send_request(company_payload)
         cleaned = sanitize_xml(resp_xml)
         root = etree.fromstring(cleaned.encode("utf-8"))
         company_elem = root.find(".//DATA/COLLECTION/COMPANY")
@@ -55,12 +69,83 @@ def get_active_company(tally: TallyClient) -> str:
             for tag in ["BASICCOMPANYNAME", "NAME"]:
                 elem = company_elem.find(tag)
                 if elem is not None and elem.text and elem.text.strip():
-                    return elem.text.strip()
-            if company_elem.get("NAME", "").strip():
-                return company_elem.get("NAME").strip()
+                    company_name = elem.text.strip()
+                    break
+            if company_name == "UnknownCompany" and company_elem.get("NAME", "").strip():
+                company_name = company_elem.get("NAME").strip()
     except Exception as e:
-        logger.warning(f"Failed to fetch active company: {e}")
-    return "UnknownCompany"
+        logger.warning(f"Failed to fetch company name from Tally: {e}")
+
+    # ── Step 2: Base currency from Currency master ────────────────────────
+    # In Tally Prime, the Currency master holds MAILINGNAME = ISO code (e.g. 'INR')
+    # and ISBASECURRENCY = 'Yes' flags the company's base currency.
+    base_currency = CURRENCY  # fallback
+    currency_payload = """<ENVELOPE>
+    <HEADER>
+        <VERSION>1</VERSION>
+        <TALLYREQUEST>Export Data</TALLYREQUEST>
+        <TYPE>Collection</TYPE>
+        <ID>CurrencyCollection</ID>
+    </HEADER>
+    <BODY>
+        <DESC>
+            <TDL>
+                <TDLMESSAGE>
+                    <COLLECTION NAME="CurrencyCollection">
+                        <TYPE>Currency</TYPE>
+                        <FETCH>NAME, MAILINGNAME, FORMALNAME, ISBASECURRENCY</FETCH>
+                    </COLLECTION>
+                </TDLMESSAGE>
+            </TDL>
+        </DESC>
+    </BODY>
+</ENVELOPE>"""
+    try:
+        resp_xml = tally.send_request(currency_payload)
+        cleaned = sanitize_xml(resp_xml)
+        root = etree.fromstring(cleaned.encode("utf-8"))
+        currencies = root.findall(".//DATA/COLLECTION/CURRENCY")
+        for curr_elem in currencies:
+            is_base_elem = curr_elem.find("ISBASECURRENCY")
+            is_base = (
+                is_base_elem is not None
+                and is_base_elem.text
+                and is_base_elem.text.strip().lower() in ("yes", "true", "1")
+            )
+            if is_base:
+                # MAILINGNAME = "INR" (shown as "Formal name" in Tally Prime UI)
+                # Fall through candidates in order of preference
+                for tag in ["MAILINGNAME", "FORMALNAME", "NAME"]:
+                    elem = curr_elem.find(tag)
+                    if elem is not None and elem.text and elem.text.strip():
+                        base_currency = elem.text.strip().upper()
+                        logger.info(
+                            f"Tally base currency fetched via Currency master "
+                            f"(tag={tag}): {base_currency}"
+                        )
+                        break
+                break  # found the base currency entry, stop scanning
+        else:
+            # ISBASECURRENCY not flagged — fall back to first currency returned
+            if currencies:
+                for tag in ["MAILINGNAME", "FORMALNAME", "NAME"]:
+                    elem = currencies[0].find(tag)
+                    if elem is not None and elem.text and elem.text.strip():
+                        base_currency = elem.text.strip().upper()
+                        logger.warning(
+                            f"ISBASECURRENCY flag not found. Using first currency "
+                            f"returned (tag={tag}): {base_currency}"
+                        )
+                        break
+            else:
+                logger.warning(
+                    f"No currencies returned by Tally. Falling back to constant: {CURRENCY}"
+                )
+    except Exception as e:
+        logger.warning(f"Failed to fetch base currency from Tally: {e}. Falling back to constant.")
+
+    return company_name, base_currency
+
 
 
 def _parse_tally_date(raw: str) -> str:
@@ -343,9 +428,9 @@ def main():
     tally = TallyClient(host=TALLY_HOST, port=TALLY_PORT, timeout=TALLY_TIMEOUT)
 
     try:
-        # 1. Fetch Company metadata
-        company = get_active_company(tally)
-        logger.info(f"Active Company: {company}")
+        # 1. Fetch Company metadata (name + base currency)
+        company, base_currency = fetch_company_info(tally)
+        logger.info(f"Active Company: {company} | Base Currency: {base_currency}")
 
         # 2. Dynamically resolve FULL date range (company inception → last voucher)
         f_date, t_date = resolve_date_range(tally)
@@ -451,7 +536,8 @@ def main():
 
         # Run Contact resolution (Customers, Vendors, Opening Balances)
         contact_results = run_contact_mapping(
-            ledgers, gmap, parent_accounts, migration_date, dumps_dir
+            ledgers, gmap, parent_accounts, migration_date, dumps_dir,
+            currency=base_currency
         )
         customer_list, vendor_list, bank_list, customer_advances, vendor_advances = contact_results
         logger.info("Contact & opening balances mapping complete.")

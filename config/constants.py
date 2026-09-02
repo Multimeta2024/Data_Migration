@@ -202,29 +202,27 @@ OB_HEADERS = [
 ]
 
 CUST_HEADERS = [
-    "Display Name", "Customer Number", "Place of Contact", "Currency Code",
+    "Display Name", "Place Of Contact", "Currency Code",
     "Company Name", "Salutation", "First Name", "Last Name", "EmailID",
     "Phone", "MobilePhone", "Facebook", "Twitter", "Department", "Designation",
-    "Payment Terms", "Payment Terms Label", "Notes", "Website", "Exemption Reason",
+    "Payment Terms Label", "Notes", "Website", "Exemption Reason",
     "GST Treatment", "GST Identification Number (GSTIN)", "PAN Number",
-    "Billing Address", "Billing City", "Billing State", "Billing Country", "Billing Pin Code",
+    "Billing Address", "Billing City", "Billing State", "Billing Country", "Billing Code",
     "Billing Phone", "Shipping Address", "Shipping City", "Shipping State", "Shipping Country",
-    "Shipping Pin Code", "Shipping Phone", "Contact Persons Details", "Attachment IDs",
-    "Outstanding Balance", "Debit or Credit of Outstanding Balance", "Payment Terms In Days",
-    "Branch Name"
+    "Shipping Code", "Shipping Phone",
+    "Opening Balance"
 ]
 
 VEND_HEADERS = [
-    "Display Name", "Vendor Number", "Source Of Supply", "Currency Code",
+    "Display Name", "Source Of Supply", "Currency Code",
     "Company Name", "Salutation", "First Name", "Last Name", "EmailID",
     "Phone", "MobilePhone", "Facebook", "Twitter", "Department", "Designation",
-    "Payment Terms", "Payment Terms Label", "Notes", "Website", "Exemption Reason",
+    "Payment Terms Label", "Notes", "Website",
     "GST Treatment", "GST Identification Number (GSTIN)", "PAN Number",
-    "Billing Address", "Billing City", "Billing State", "Billing Country", "Billing Pin Code",
+    "Billing Address", "Billing City", "Billing State", "Billing Country", "Billing Code",
     "Billing Phone", "Shipping Address", "Shipping City", "Shipping State", "Shipping Country",
-    "Shipping Pin Code", "Shipping Phone", "Contact Persons Details", "Attachment IDs",
-    "Outstanding Balance", "Debit or Credit of Outstanding Balance", "Payment Terms In Days",
-    "Branch Name"
+    "Shipping Code", "Shipping Phone",
+    "Opening Balance"
 ]
 
 CUST_ADV_HEADERS = [

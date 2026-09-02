@@ -15,7 +15,7 @@ from mappers.coa_mapper import resolve_custom_path_and_root, classify_group_by_n
 
 logger = logging.getLogger(__name__)
 
-def run_contact_mapping(ledgers, gmap, parent_accounts, migration_date, out_dir):
+def run_contact_mapping(ledgers, gmap, parent_accounts, migration_date, out_dir, currency: str = "INR"):
     """Maps ledger contacts and opening balances, exporting files for customers, vendors, and advances."""
     collision_parent_names = {p.lower().strip() for p in parent_accounts.keys()}
 
@@ -215,42 +215,15 @@ def run_contact_mapping(ledgers, gmap, parent_accounts, migration_date, out_dir)
         writer.writerows(opening_balances_to_import)
     logger.info(f"Opening Balances CSV generated at {ob_path}")
 
-    # Ensure Unspecified Vendor & Unspecified Customer exist
-    vendor_names = {v["name"].strip().lower() for v in vendor_list}
-    if "unspecified vendor" not in vendor_names:
-        vendor_list.append({
-            "name": "Unspecified Vendor",
-            "opening_balance": "",
-            "debit_or_credit": "",
-            "gstin": "",
-            "pan": "",
-            "pincode": "",
-            "address": "",
-            "credit_period": "",
-            "tally_state": "",
-        })
 
-    customer_names = {c["name"].strip().lower() for c in customer_list}
-    if "unspecified customer" not in customer_names:
-        customer_list.append({
-            "name": "Unspecified Customer",
-            "opening_balance": "",
-            "debit_or_credit": "",
-            "gstin": "",
-            "pan": "",
-            "pincode": "",
-            "address": "",
-            "credit_period": "",
-            "tally_state": "",
-        })
 
     # Write Customers CSV
     cust_path = os.path.join(out_dir, "zoho_customers_import.csv")
-    _write_contacts_csv(cust_path, customer_list, CUST_HEADERS, is_vendor=False)
+    _write_contacts_csv(cust_path, customer_list, CUST_HEADERS, is_vendor=False, currency=currency)
 
     # Write Vendors CSV
     vend_path = os.path.join(out_dir, "zoho_vendors_import.csv")
-    _write_contacts_csv(vend_path, vendor_list, VEND_HEADERS, is_vendor=True)
+    _write_contacts_csv(vend_path, vendor_list, VEND_HEADERS, is_vendor=True, currency=currency)
 
     # Write Customer Advances CSV
     cust_adv_path = os.path.join(out_dir, "zoho_customer_advances_import.csv")
@@ -307,20 +280,20 @@ def run_contact_mapping(ledgers, gmap, parent_accounts, migration_date, out_dir)
 
     return customer_list, vendor_list, bank_list, customer_advances_to_import, vendor_advances_to_import
 
-def _write_contacts_csv(filepath, contacts, headers, is_vendor=False):
+def _write_contacts_csv(filepath, contacts, headers, is_vendor=False, currency: str = "INR"):
     """Writes contacts to CSV in Zoho Books 63-column format."""
     try:
-        _write_f(filepath, contacts, headers, is_vendor)
+        _write_f(filepath, contacts, headers, is_vendor, currency=currency)
     except PermissionError:
         base, ext = os.path.splitext(filepath)
         fallback = base + "_unlocked" + ext
         logger.warning(f"Permission denied on contact file. Writing to: {fallback}")
         try:
-            _write_f(fallback, contacts, headers, is_vendor)
+            _write_f(fallback, contacts, headers, is_vendor, currency=currency)
         except Exception as e:
             logger.error(f"Failed to write fallback contacts CSV: {e}")
 
-def _write_f(filepath, contacts, headers, is_vendor):
+def _write_f(filepath, contacts, headers, is_vendor, currency: str = "INR"):
     with open(filepath, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
         writer.writeheader()
@@ -348,13 +321,13 @@ def _write_f(filepath, contacts, headers, is_vendor):
             # Standard Zoho contact schema row
             row = {
                 "Display Name": c["name"],
-                "Customer Number" if not is_vendor else "Vendor Number": "",
-                "Place of Contact" if not is_vendor else "Source Of Supply": place_of_supply,
-                "Currency Code": CURRENCY,
-                "Company Name": c["name"],
+                "Customer Number" if not is_vendor else "Vendor Number": "",  # kept for vendor compatibility; ignored for customers
+                "Place Of Contact" if not is_vendor else "Source Of Supply": place_of_supply,
+                "Currency Code": currency,
+                "Company Name": "",
                 "Salutation": "", "First Name": "", "Last Name": "", "EmailID": "",
                 "Phone": "", "MobilePhone": "", "Facebook": "", "Twitter": "", "Department": "", "Designation": "",
-                "Payment Terms": p_terms, "Payment Terms Label": "", "Notes": "", "Website": "", "Exemption Reason": "",
+                "Payment Terms Label": p_terms, "Notes": "", "Website": "", "Exemption Reason": "",
                 "GST Treatment": treatment,
                 "GST Identification Number (GSTIN)": gstin_stripped,
                 "PAN Number": c["pan"],
@@ -362,18 +335,15 @@ def _write_f(filepath, contacts, headers, is_vendor):
                 "Billing City": "",
                 "Billing State": state_name or "Tamil Nadu",
                 "Billing Country": "India",
-                "Billing Pin Code": c["pincode"],
+                "Billing Code": c["pincode"],
                 "Billing Phone": "",
                 "Shipping Address": c["address"],
                 "Shipping City": "",
                 "Shipping State": state_name or "Tamil Nadu",
                 "Shipping Country": "India",
-                "Shipping Pin Code": c["pincode"],
+                "Shipping Code": c["pincode"],
                 "Shipping Phone": "",
-                "Contact Persons Details": "", "Attachment IDs": "",
-                "Outstanding Balance": "", "Debit or Credit of Outstanding Balance": "",
-                "Payment Terms In Days": str(terms_days) if terms_days > 0 else "",
-                "Branch Name": "Head Office"
+                "Opening Balance": "",
             }
             writer.writerow(row)
     logger.info(f"Contacts CSV generated at {filepath}")
