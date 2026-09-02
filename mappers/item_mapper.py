@@ -273,6 +273,7 @@ def run_item_mapping(tally_client, out_dir: str) -> list:
             raw_name = item_elem.get("NAME", "").strip()
         if not raw_name:
             continue
+        raw_name = raw_name.replace("??", '"')
 
         raw_unit = _txt(item_elem, "BASEUNITS")
         zoho_unit = _clean_unit(raw_unit)

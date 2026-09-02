@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config.settings import TALLY_HOST, TALLY_PORT, TALLY_TIMEOUT, OUTPUT_DIR
 from core.tally_client import TallyClient
-from main import resolve_date_range, get_active_company
+from main import resolve_date_range, fetch_company_info
 from mappers.item_mapper import run_item_mapping
 from mappers.bill_mapper import run_bill_mapping
 
@@ -28,7 +28,7 @@ def main():
     tally = TallyClient(host=TALLY_HOST, port=TALLY_PORT, timeout=timeout)
 
     try:
-        company = get_active_company(tally)
+        company, _ = fetch_company_info(tally)
         logger.info(f"Active Company: {company}")
 
         # 1. Regenerate Items and Items Opening Stock

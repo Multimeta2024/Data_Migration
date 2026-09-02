@@ -43,4 +43,6 @@ class TallyClient:
             timeout=self.timeout
         )
         resp.raise_for_status()
+        if resp.encoding is None or resp.encoding.lower() == "iso-8859-1":
+            resp.encoding = "utf-8"
         return resp.text
