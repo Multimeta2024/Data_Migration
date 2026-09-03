@@ -294,8 +294,6 @@ def run_item_mapping(tally_client, out_dir: str) -> list:
 
         parent = _txt(item_elem, "PARENT")
         description = _txt(item_elem, "DESCRIPTION")
-        if not description:
-            description = name
 
         std_selling_raw = _txt(item_elem, "STANDARDSELLINGPRICE")
         std_cost_raw = _txt(item_elem, "STANDARDCOSTPRICE")
@@ -364,7 +362,7 @@ def run_item_mapping(tally_client, out_dir: str) -> list:
             inventory_account = "Inventory Asset"
             init_stock = _fmt_qty(ob_qty) if ob_qty > 0 else "0"
             init_rate = _fmt_rate(ob_rate) if ob_qty > 0 else "0"
-            warehouse_name = "Head Office"
+            warehouse_name = ""
 
         row = {
             "Item Name":          name,
@@ -401,7 +399,7 @@ def run_item_mapping(tally_client, out_dir: str) -> list:
                 "TrackSerialNumber":   "FALSE",
                 "Track Batches":       "FALSE",
                 "Enable Bin Tracking":  "FALSE",
-                "Location Name":       "Head Office",
+                "Location Name":       "",
                 "Batch Reference#":    "",
                 "Manufacturer Batch#": "",
                 "Manufactured Date":   "",
