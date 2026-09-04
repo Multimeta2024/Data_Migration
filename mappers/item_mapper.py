@@ -112,6 +112,7 @@ def _parse_gst_details(item_elem) -> dict:
         "igst_rate": 0.0,
         "gst_applicable": "",
         "supply_type": "goods",
+        "taxability": "",
     }
 
     gst_app = _txt(item_elem, "GSTAPPLICABLE").lower()
@@ -130,6 +131,9 @@ def _parse_gst_details(item_elem) -> dict:
             break
 
     for gst_detail in item_elem.findall(".//GSTDETAILS.LIST"):
+        if not result["taxability"]:
+            result["taxability"] = _txt(gst_detail, "TAXABILITY").lower()
+
         duty_head = _txt(gst_detail, "GSTRATEDUTYHEAD").upper()
         rate_str = _txt(gst_detail, "GSTRATE")
         try:
@@ -147,11 +151,12 @@ def _parse_gst_details(item_elem) -> dict:
     return result
 
 
-def _build_tax_columns(gst: dict) -> dict:
+def _build_tax_columns(gst: dict, fallback_rate: float = 0.0) -> dict:
     """
     Build Zoho inter-state and intra-state tax columns.
     """
     gst_app = gst.get("gst_applicable", "")
+    taxability = gst.get("taxability", "")
     cgst = gst.get("cgst_rate", 0.0)
     sgst = gst.get("sgst_rate", 0.0)
     igst = gst.get("igst_rate", 0.0)
@@ -159,7 +164,7 @@ def _build_tax_columns(gst: dict) -> dict:
     intra_total = int(round(cgst + sgst))
     inter_total = int(round(igst)) if igst > 0 else intra_total
 
-    taxability_type = ""
+    taxability_type = "taxable"
     exemption_reason = ""
     inter_tax_name = ""
     inter_tax_type = ""
@@ -168,13 +173,16 @@ def _build_tax_columns(gst: dict) -> dict:
     intra_tax_type = ""
     intra_tax_rate = ""
 
-    if gst_app in ("notapplicable", "exempt"):
+    if gst_app in ("notapplicable", "exempt") or taxability in ("exempt", "nil rated", "nilrated"):
         taxability_type = "NON TAXABLE EXEMPTION"
-    elif gst_app == "nongst":
+    elif gst_app == "nongst" or taxability == "non-gst":
         taxability_type = "Non-GST Supply"
-    elif intra_total == 0 and inter_total == 0:
-        taxability_type = ""
     else:
+        if intra_total == 0 and inter_total == 0 and fallback_rate > 0:
+            intra_total = int(round(fallback_rate))
+            inter_total = intra_total
+
+        taxability_type = "taxable"
         if inter_total > 0:
             inter_tax_name = f"IGST{inter_total}"
             inter_tax_type = "Simple"
@@ -230,6 +238,27 @@ def _get_purchase_rate(item_elem, std_cost: float) -> float:
     return 0.0
 
 
+def _load_transaction_tax_map(out_dir: str) -> dict:
+    """Load item name -> tax percentage from invoice and bill CSVs if available."""
+    tax_map = {}
+    for filename in ("zoho_invoices_import.csv", "zoho_bills_import.csv"):
+        filepath = os.path.join(out_dir, filename)
+        if os.path.exists(filepath):
+            with open(filepath, "r", encoding="utf-8-sig") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    iname = row.get("Item Name", "").strip().lower()
+                    irate = row.get("Item Tax %", "").strip()
+                    if iname and irate:
+                        try:
+                            rate_val = float(irate)
+                            if rate_val > 0:
+                                tax_map[iname] = rate_val
+                        except ValueError:
+                            pass
+    return tax_map
+
+
 # ---------------------------------------------------------------------------
 # Main mapper
 # ---------------------------------------------------------------------------
@@ -241,6 +270,7 @@ def run_item_mapping(tally_client, out_dir: str) -> list:
     """
     base_csv = os.path.join(out_dir, "zoho_items_import.csv")
     op_stock_csv = os.path.join(out_dir, "zoho_items_opening_stock_import.csv")
+    tx_tax_map = _load_transaction_tax_map(out_dir)
 
     logger.info("Querying Stock Items from Tally...")
     xml_data = query_stock_items(tally_client)
@@ -322,7 +352,8 @@ def run_item_mapping(tally_client, out_dir: str) -> list:
             ob_value = ob_qty * ob_rate
 
         gst = _parse_gst_details(item_elem)
-        tax_cols = _build_tax_columns(gst)
+        fb_rate = tx_tax_map.get(raw_name_lower, 0.0)
+        tax_cols = _build_tax_columns(gst, fallback_rate=fb_rate)
         supply_type = gst.get("supply_type", "goods")
 
         product_type = supply_type
