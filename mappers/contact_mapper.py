@@ -324,7 +324,7 @@ def _write_f(filepath, contacts, headers, is_vendor, currency: str = "INR"):
                 "Customer Number" if not is_vendor else "Vendor Number": "",  # kept for vendor compatibility; ignored for customers
                 "Place Of Contact" if not is_vendor else "Source Of Supply": place_of_supply,
                 "Currency Code": currency,
-                "Company Name": "",
+                "Company Name": c["name"],
                 "Salutation": "", "First Name": "", "Last Name": "", "EmailID": "",
                 "Phone": "", "MobilePhone": "", "Facebook": "", "Twitter": "", "Department": "", "Designation": "",
                 "Payment Terms Label": p_terms, "Notes": "", "Website": "", "Exemption Reason": "",
