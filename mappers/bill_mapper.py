@@ -7,16 +7,12 @@ from lxml import etree
 
 from config.constants import CURRENCY, GST_STATE_MAP, BILL_HEADERS, TALLY_UNIT_TO_ZOHO
 
-def _clean_unit(tally_unit: str) -> str:
-    if not tally_unit:
-        return "pcs"
-    key = tally_unit.strip().lower()
-    if "/" in key:
-        key = key.split("/")[0].strip()
-    return TALLY_UNIT_TO_ZOHO.get(key, key[:10])
-from utils.gst_helpers import get_state_code, infer_gst_treatment
+from utils.math_helpers import clean_float, parse_qty_unit, parse_rate, parse_due_days, clean_unit
 from utils.date_helpers import format_date, calculate_due_date, get_fy_batches
-from utils.math_helpers import clean_float, parse_qty_unit, parse_rate, parse_due_days
+from utils.gst_helpers import get_state_code, infer_gst_treatment
+
+def _clean_unit(tally_unit: str) -> str:
+    return clean_unit(tally_unit)
 from core.xml_parser import sanitize_xml
 from mappers.invoice_mapper import format_invoice_number, is_tax_ledger, get_zoho_tax_info, snap_to_standard_gst, format_number, _write_split_csv
 

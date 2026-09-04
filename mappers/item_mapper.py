@@ -21,7 +21,7 @@ from lxml import etree
 
 from config.constants import ITEM_HEADERS, ITEM_OPENING_STOCK_HEADERS, TALLY_UNIT_TO_ZOHO
 from core.xml_parser import sanitize_xml
-from utils.math_helpers import clean_float
+from utils.math_helpers import clean_float, clean_unit
 
 logger = logging.getLogger(__name__)
 
@@ -76,13 +76,7 @@ def _txt(elem, tag: str) -> str:
 
 
 def _clean_unit(tally_unit: str) -> str:
-    """Normalise a Tally UOM string to a Zoho-compatible unit."""
-    if not tally_unit:
-        return "pcs"
-    key = tally_unit.strip().lower()
-    if "/" in key:
-        key = key.split("/")[0].strip()
-    return TALLY_UNIT_TO_ZOHO.get(key, key[:10])
+    return clean_unit(tally_unit)
 
 
 def _parse_qty_rate(raw_qty: str, raw_rate: str):

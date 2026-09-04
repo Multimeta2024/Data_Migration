@@ -2,13 +2,14 @@ import re
 from config.constants import TALLY_UNIT_TO_ZOHO
 
 def clean_unit(tally_unit: str) -> str:
-    """Normalises a Tally UOM string to a Zoho-compatible unit (e.g. 'Kgs' -> 'kg', 'Nos' -> 'pcs')."""
+    """Normalises a Tally UOM string to a Zoho-compatible unit if matched in TALLY_UNIT_TO_ZOHO. Otherwise returns the raw Tally unit."""
     if not tally_unit:
-        return "pcs"
-    key = tally_unit.strip().lower()
+        return ""
+    clean_raw = tally_unit.strip()
+    key = clean_raw.lower()
     if "/" in key:
         key = key.split("/")[0].strip()
-    return TALLY_UNIT_TO_ZOHO.get(key, key[:10])
+    return TALLY_UNIT_TO_ZOHO.get(key, clean_raw)
 
 def clean_float(val_str: str) -> float:
     """Safely converts string to float, removing commas."""
