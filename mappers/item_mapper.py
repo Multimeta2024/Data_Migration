@@ -154,6 +154,11 @@ def _parse_gst_details(item_elem) -> dict:
 def _build_tax_columns(gst: dict, fallback_rate: float = 0.0) -> dict:
     """
     Build Zoho inter-state and intra-state tax columns.
+    Matches Zoho Books official sample template structure exactly:
+    - Taxable items: Taxability Type = "", Exemption Reason = "", Tax Names & Rates = IGST18/GST18, etc.
+    - Exempt items: Taxability Type = "", Exemption Reason = "NON TAXABLE EXEMPTION", Tax Names & Rates = ""
+    - Non-GST items: Taxability Type = "Non-GST Supply", Exemption Reason = ""
+    - Out of Scope items: Taxability Type = "Out Of Scope", Exemption Reason = ""
     """
     gst_app = gst.get("gst_applicable", "")
     taxability = gst.get("taxability", "")
@@ -164,7 +169,7 @@ def _build_tax_columns(gst: dict, fallback_rate: float = 0.0) -> dict:
     intra_total = int(round(cgst + sgst))
     inter_total = int(round(igst)) if igst > 0 else intra_total
 
-    taxability_type = "taxable"
+    taxability_type = ""
     exemption_reason = ""
     inter_tax_name = ""
     inter_tax_type = ""
@@ -174,15 +179,18 @@ def _build_tax_columns(gst: dict, fallback_rate: float = 0.0) -> dict:
     intra_tax_rate = ""
 
     if gst_app in ("notapplicable", "exempt") or taxability in ("exempt", "nil rated", "nilrated"):
-        taxability_type = "NON TAXABLE EXEMPTION"
+        taxability_type = ""
+        exemption_reason = "NON TAXABLE EXEMPTION"
     elif gst_app == "nongst" or taxability == "non-gst":
         taxability_type = "Non-GST Supply"
+        exemption_reason = ""
     else:
-        if intra_total == 0 and inter_total == 0 and fallback_rate > 0:
-            intra_total = int(round(fallback_rate))
+        effective_rate = fallback_rate if fallback_rate > 0 else 18.0
+        if intra_total == 0 and inter_total == 0:
+            intra_total = int(round(effective_rate))
             inter_total = intra_total
 
-        taxability_type = "taxable"
+        taxability_type = ""
         if inter_total > 0:
             inter_tax_name = f"IGST{inter_total}"
             inter_tax_type = "Simple"
@@ -351,8 +359,17 @@ def run_item_mapping(tally_client, out_dir: str) -> list:
         if ob_value == 0.0 and ob_qty > 0 and ob_rate > 0:
             ob_value = ob_qty * ob_rate
 
+        if purchase_rate == 0.0 and ob_rate > 0.0:
+            purchase_rate = ob_rate
+
         gst = _parse_gst_details(item_elem)
         fb_rate = tx_tax_map.get(raw_name_lower, 0.0)
+
+        parent_lower = parent.strip().lower() if parent else ""
+        exempt_groups = {"agri inputs", "grocery", "rice", "millets", "pulses", "organic manure", "f&v", "fruits", "vegetables", "chilli", "onion", "garlic", "beans", "gourd", "grapes", "watermelon", "cattle feed", "millet husk bran", "spices"}
+        if fb_rate == 0.0 and (parent_lower in exempt_groups or gst.get("taxability") in ("exempt", "nil rated", "nilrated")):
+            gst["taxability"] = "exempt"
+
         tax_cols = _build_tax_columns(gst, fallback_rate=fb_rate)
         supply_type = gst.get("supply_type", "goods")
 
